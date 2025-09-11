@@ -7,6 +7,7 @@ export const config = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   HOST: process.env.HOST || '0.0.0.0',
   PORT: parseInt(process.env.PORT || '3001'),
+  API_HOST: process.env.API_HOST || 'localhost:3001',
   
   // CORS
   CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:3000',

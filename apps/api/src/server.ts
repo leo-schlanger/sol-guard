@@ -9,6 +9,9 @@ import multipart from '@fastify/multipart'
 import { config } from './config'
 import { registerRoutes } from './routes'
 import { registerServices } from './services'
+import { registerApiRoutes } from './services/api/gateway'
+import { certificationEngine } from './services/certification/cnft-engine'
+import { realTimeMonitor } from './services/monitoring/real-time-engine'
 
 const fastify = Fastify({
   logger: {
@@ -68,10 +71,36 @@ async function buildServer() {
   // Register services
   await registerServices(fastify)
 
+  // Initialize advanced services
+  await initializeAdvancedServices()
+
   // Register routes
   await registerRoutes(fastify)
 
+  // Register advanced API routes
+  await registerApiRoutes(fastify)
+
   return fastify
+}
+
+async function initializeAdvancedServices() {
+  try {
+    console.log('🔧 Initializing advanced SolGuard services...')
+    
+    // Initialize certification system
+    await certificationEngine.initializeCertificationSystem()
+    
+    // Start real-time monitoring (if configured)
+    if (process.env.ENABLE_REAL_TIME_MONITORING === 'true') {
+      console.log('📡 Starting real-time monitoring system...')
+      // You can add default monitoring targets here if needed
+    }
+    
+    console.log('✅ Advanced services initialized successfully')
+  } catch (error) {
+    console.error('❌ Failed to initialize advanced services:', error)
+    // Don't exit the process, just log the error
+  }
 }
 
 async function start() {
