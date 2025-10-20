@@ -1,38 +1,84 @@
-import {
-  RiskScore,
-  RiskLevel,
-  RiskBreakdown,
-  RiskScoreOptions,
-  RiskFactors,
-  TokenLiquidity,
-  TokenHolders,
-  TokenProgram,
-  MarketBehavior
-} from '@sol-guard/types';
+// Tipos locais substituindo '@sol-guard/types'
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+export interface RiskScoreOptions {
+  includeHistory?: boolean;
+}
+
+export interface TokenInfo {
+  address?: string;
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  supply: number;
+  [key: string]: any;
+}
+
+export interface StaticAnalysis {
+  score: number;
+  vulnerabilities: Array<any>;
+  codeQuality: number;
+  securityPatterns: Array<any>;
+  timestamp: string;
+  [key: string]: any;
+}
+
+export interface DynamicAnalysis {
+  score: number;
+  runtimeBehavior: Array<any>;
+  gasUsage: {
+    average: number;
+    max: number;
+    min: number;
+    distribution: Array<any>;
+    [key: string]: any;
+  };
+  executionPaths: Array<any>;
+  timestamp: string;
+  [key: string]: any;
+}
+
+export interface OnChainAnalysis {
+  score: number;
+  liquidity: any;
+  holderDistribution: any;
+  transactionHistory: any;
+  contractInteractions: Array<any>;
+  timestamp: string;
+  [key: string]: any;
+}
+
+export interface RiskBreakdown {
+  staticAnalysis: number;
+  dynamicAnalysis: number;
+  onChainAnalysis: number;
+  details: {
+    staticAnalysis: StaticAnalysis;
+    dynamicAnalysis: DynamicAnalysis;
+    onChainAnalysis: OnChainAnalysis;
+  };
+  [key: string]: any;
+}
+
+export interface RiskScore {
+  score: number;
+  level: RiskLevel;
+  breakdown: RiskBreakdown;
+  timestamp: string;
+  tokenAddress: string;
+}
 import { DatabaseService } from './DatabaseService';
 import { SolanaService } from './SolanaService';
-import { z } from 'zod';
-import pRetry from 'p-retry';
-import LRUCache from 'lru-cache';
-
-const DEFAULT_WEIGHTS = {
-  liquidity: 0.25,
-  holders: 0.25,
-  programSecurity: 0.25,
-  marketBehavior: 0.25
-};
-
 export class RiskScoreService {
-  private cache: LRUCache<string, RiskScore>;
+  private cache: Map<string, { value: RiskScore; timestamp: number }>;
+  private readonly CACHE_TTL = 1000 * 60 * 5; // 5 minutes
+  private readonly MAX_CACHE_SIZE = 1000;
   
   constructor(
     private database: DatabaseService,
     private solana: SolanaService
   ) {
-    this.cache = new LRUCache({
-      max: 1000,
-      ttl: 1000 * 60 * 5 // 5 minutes
-    });
+    this.cache = new Map();
   }
 
   async calculateRiskScore(
@@ -42,219 +88,34 @@ export class RiskScoreService {
     try {
       // Check cache first
       const cached = this.cache.get(tokenAddress);
-      if (cached && !options.includeHistory) {
-        return cached;
+      const now = Date.now();
+      
+      if (cached && !options.includeHistory && (now - cached.timestamp) < this.CACHE_TTL) {
+        return cached.value;
       }
 
-      const [liquidityScore, holdersScore, programSecurityScore, marketBehaviorScore] = 
-        await Promise.all([
-          this.calculateLiquidityScore(tokenAddress),
-          this.calculateHoldersScore(tokenAddress),
-          this.calculateProgramSecurityScore(tokenAddress),
-          this.calculateMarketBehaviorScore(tokenAddress)
-        ]);
+      // Perform all analyses in parallel
+      const [
+        staticAnalysis,
+        dynamicAnalysis,
+        onChainAnalysis
+      ] = await Promise.all([
+        this.performStaticAnalysis(tokenAddress),
+        this.performDynamicAnalysis(tokenAddress),
+        this.performOnChainAnalysis(tokenAddress)
+      ]);
 
-      const weights = options.customWeights || DEFAULT_WEIGHTS;
-      
-      const factors: RiskFactors = {
-        liquidity: liquidityScore,
-        holders: holdersScore,
-        programSecurity: programSecurityScore,
-        marketBehavior: marketBehaviorScore
-      };
+      // Calculate total score with weighted components
+      const totalScore = (
+        staticAnalysis.score * 0.3 +    // Static analysis 30%
+        dynamicAnalysis.score * 0.3 +   // Dynamic analysis 30%
+        onChainAnalysis.score * 0.4     // On-chain analysis 40%
+      );
 
-      const totalScore = 
-        factors.liquidity * weights.liquidity +
-        factors.holders * weights.holders +
-        factors.programSecurity * weights.programSecurity +
-        factors.marketBehavior * weights.marketBehavior;
+      const level = this.getRiskLevel(totalScore);
 
       const riskScore: RiskScore = {
         score: Math.round(totalScore * 100) / 100,
-        breakdown: {
-          totalScore,
-          factors,
-          timestamp: new Date().toISOString()
-        },
-        level: this.getRiskLevel(totalScore),
-        timestamp: new Date().toISOString(),
-        tokenAddress
-      };
-
-      // Store risk score history if enabled
-      if (options.includeHistory) {
-        await this.storeRiskScoreHistory(tokenAddress, riskScore.breakdown);
-      }
-
-      // Cache the result
-      this.cache.set(tokenAddress, riskScore);
-
-      return riskScore;
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to calculate risk score: ${error.message}`);
-      }
-      throw error;
-    }
-  }
-
-  async getRiskScoreHistory(
-    tokenAddress: string,
-    limit: number = 100,
-    offset: number = 0
-  ): Promise<Array<{ score: number; timestamp: string; breakdown: RiskBreakdown }>> {
-    try {
-      const history = await this.database.riskScores.findMany({
-        where: { tokenAddress },
-        orderBy: { timestamp: 'desc' },
-        take: limit,
-        skip: offset
-      });
-
-      return history.map(record => ({
-        score: record.score,
-        timestamp: record.timestamp,
-        breakdown: JSON.parse(record.breakdown)
-      }));
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to get risk score history: ${error.message}`);
-      }
-      throw error;
-    }
-  }
-
-  private getRiskLevel(score: number): RiskLevel {
-    if (score >= 75) return 'CRITICAL';
-    if (score >= 50) return 'HIGH';
-    if (score >= 25) return 'MEDIUM';
-    return 'LOW';
-  }
-
-  private async calculateLiquidityScore(tokenAddress: string): Promise<number> {
-    const liquidityInfo = await pRetry(
-      () => this.solana.getTokenLiquidity(tokenAddress),
-      { retries: 3 }
-    );
-
-    // Score based on liquidity depth (60%) and stability (40%)
-    const depthScore = Math.min(60, (liquidityInfo.totalLiquidity / 1000000) * 60);
-    const stabilityScore = Math.min(40, (liquidityInfo.lastWeekStability / 100) * 40);
-
-    return (depthScore + stabilityScore) / 100;
-  }
-
-  private async calculateHoldersScore(tokenAddress: string): Promise<number> {
-    const holderInfo = await pRetry(
-      () => this.solana.getTokenHolders(tokenAddress),
-      { retries: 3 }
-    );
-
-    // Score based on holder distribution (40%) and count (60%)
-    const distributionScore = Math.min(40, (1 - holderInfo.giniCoefficient) * 40);
-    const countScore = Math.min(60, (Math.log10(holderInfo.uniqueHolders) / 4) * 60);
-
-    return (distributionScore + countScore) / 100;
-  }
-
-  private async calculateProgramSecurityScore(tokenAddress: string): Promise<number> {
-    const securityInfo = await pRetry(
-      () => this.solana.getTokenProgram(tokenAddress),
-      { retries: 3 }
-    );
-
-    let score = 0;
-
-    // Verification status (40%)
-    if (securityInfo.isVerified) score += 40;
-
-    // Audit status (30%)
-    if (securityInfo.hasAudit) score += 30;
-
-    // Upgrade authority status (30%)
-    if (securityInfo.hasLockedUpgradeAuthority) score += 30;
-
-    return score / 100;
-  }
-
-  private async calculateMarketBehaviorScore(tokenAddress: string): Promise<number> {
-    const marketInfo = await pRetry(
-      () => this.solana.getMarketBehavior(tokenAddress),
-      { retries: 3 }
-    );
-
-    // Score based on price stability (50%) and trading patterns (50%)
-    const volatilityScore = Math.min(50, (1 - marketInfo.priceVolatility) * 50);
-    const patternScore = Math.min(50, (1 - marketInfo.abnormalTradingScore) * 50);
-
-    return (volatilityScore + patternScore) / 100;
-  }
-
-  private async storeRiskScoreHistory(tokenAddress: string, breakdown: RiskBreakdown): Promise<void> {
-    const timestamp = new Date().toISOString();
-    
-    try {
-      await this.database.riskScores.create({
-        data: {
-          tokenAddress,
-          score: breakdown.totalScore,
-          timestamp,
-          breakdown: JSON.stringify(breakdown)
-        }
-      });
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to store risk score history: ${error.message}`);
-      }
-      throw error;
-    }
-  }
-
-  async calculateRiskScore(
-    tokenAddress: string,
-    options: RiskScoreOptions = {}
-  ): Promise<RiskScore> {
-    try {
-      // Check cache first
-      const cached = this.cache.get(tokenAddress);
-      if (cached && !options.includeHistory) {
-        return cached;
-      }
-
-      const [liquidityScore, holdersScore, programSecurityScore, marketBehaviorScore] = 
-        await Promise.all([
-          this.calculateLiquidityScore(tokenAddress),
-          this.calculateHoldersScore(tokenAddress),
-          this.calculateProgramSecurityScore(tokenAddress),
-          this.calculateMarketBehaviorScore(tokenAddress)
-        ]);
-
-      const weights = options.customWeights || DEFAULT_WEIGHTS;
-      
-      const factors: RiskFactors = {
-        liquidity: liquidityScore,
-        holders: holdersScore,
-        programSecurity: programSecurityScore,
-        marketBehavior: marketBehaviorScore
-      };
-
-      const totalScore = 
-        factors.liquidity * weights.liquidity +
-        factors.holders * weights.holders +
-        factors.programSecurity * weights.programSecurity +
-        factors.marketBehavior * weights.marketBehavior;
-
-      const riskScore: RiskScore = {
-        score: Math.round(totalScore * 100) / 100,
-        breakdown: {
-          totalScore,
-          factors,
-          timestamp: new Date().toISOString()
-        },
-        level: this.getRiskLevel(totalScore),
-        timestamp: new Date().toISOString(),
-        tokenAddress
-      };
         level,
         breakdown: {
           staticAnalysis: staticAnalysis.score,
@@ -264,75 +125,125 @@ export class RiskScoreService {
             staticAnalysis,
             dynamicAnalysis,
             onChainAnalysis,
-          },
+          }
         },
-        timestamp: new Date(),
-        tokenAddress,
+        timestamp: new Date().toISOString(),
+        tokenAddress
+      };
+
+      // Store in database if history is enabled
+      if (options.includeHistory) {
+        await this.storeRiskScoreHistory(tokenAddress, riskScore.breakdown);
       }
 
-      // Store in database
-      await this.database.storeRiskScore(riskScore)
+      // Cache the result with timestamp
+      this.cache.set(tokenAddress, { value: riskScore, timestamp: Date.now() });
+      
+      // Enforce cache size limit
+      if (this.cache.size > this.MAX_CACHE_SIZE) {
+        const iterator = this.cache.keys();
+        const firstKey = iterator.next().value;
+        if (firstKey) {
+          this.cache.delete(firstKey);
+        }
+      }
 
-      return riskScore
+      return riskScore;
     } catch (error) {
-      throw new Error(`Failed to calculate risk score: ${error.message}`)
+      if (error instanceof Error) {
+        throw new Error(`Failed to calculate risk score: ${error.message}`);
+      }
+      throw new Error('Failed to calculate risk score: Unknown error');
     }
   }
 
   async getRiskScoreHistory(
     tokenAddress: string,
-    options: RiskScoreHistoryOptions
-  ): Promise<RiskScore[]> {
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<Array<RiskScore>> {
     try {
-      return await this.database.getRiskScoreHistory(tokenAddress, options)
+      const history = await this.database.getRiskScoreHistory(tokenAddress, limit, offset);
+      return history as any;
     } catch (error) {
-      throw new Error(`Failed to get risk score history: ${error.message}`)
+      if (error instanceof Error) {
+        throw new Error(`Failed to get risk score history: ${error.message}`);
+      }
+      throw new Error('Failed to get risk score history: Unknown error');
     }
   }
 
-  private async performStaticAnalysis(tokenAddress: string) {
-    // Placeholder for static analysis
-    // In a real implementation, this would analyze the smart contract code
-    return {
-      score: Math.floor(Math.random() * 100),
-      vulnerabilities: [],
-      codeQuality: Math.floor(Math.random() * 100),
-      securityPatterns: [],
-    }
+  private getRiskLevel(score: number): RiskLevel {
+    if (score >= 80) return 'low';
+    if (score >= 60) return 'medium';
+    if (score >= 40) return 'high';
+    return 'critical';
   }
 
-  private async performDynamicAnalysis(tokenAddress: string) {
-    // Placeholder for dynamic analysis
-    // In a real implementation, this would analyze runtime behavior
-    return {
-      score: Math.floor(Math.random() * 100),
-      runtimeBehavior: [],
-      gasUsage: {
-        average: 0,
-        max: 0,
-        min: 0,
-        distribution: [],
-      },
-      executionPaths: [],
-    }
-  }
-
-  private async performOnChainAnalysis(tokenAddress: string) {
+  private async performStaticAnalysis(tokenAddress: string): Promise<StaticAnalysis> {
     try {
-      // Get token metadata and basic info
-      const tokenInfo = await this.solana.getTokenInfo(tokenAddress)
+      const programInfo = await this.solana.getTokenProgram(tokenAddress);
       
-      // Analyze liquidity
-      const liquidity = await this.analyzeLiquidity(tokenAddress)
-      
-      // Analyze holder distribution
-      const holderDistribution = await this.analyzeHolderDistribution(tokenAddress)
-      
-      // Analyze transaction history
-      const transactionHistory = await this.analyzeTransactionHistory(tokenAddress)
+      return {
+        score: this.calculateStaticScore(programInfo),
+        vulnerabilities: [],
+        codeQuality: programInfo.isVerified ? 90 : 50,
+        securityPatterns: [],
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Static analysis failed: ${error.message}`);
+      }
+      throw new Error('Static analysis failed: Unknown error');
+    }
+  }
 
-      // Calculate on-chain score based on multiple factors
-      const score = this.calculateOnChainScore(liquidity, holderDistribution, transactionHistory, tokenInfo)
+  private async performDynamicAnalysis(tokenAddress: string): Promise<DynamicAnalysis> {
+    try {
+      const tokenBehavior = await this.solana.getMarketBehavior(tokenAddress);
+      
+      return {
+        score: this.calculateDynamicScore(tokenBehavior),
+        runtimeBehavior: [],
+        gasUsage: {
+          average: tokenBehavior.averageGas || 0,
+          max: tokenBehavior.maxGas || 0,
+          min: tokenBehavior.minGas || 0,
+          distribution: []
+        },
+        executionPaths: [],
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Dynamic analysis failed: ${error.message}`);
+      }
+      throw new Error('Dynamic analysis failed: Unknown error');
+    }
+  }
+
+  private async performOnChainAnalysis(tokenAddress: string): Promise<OnChainAnalysis> {
+    try {
+      // Get token info and perform analyses in parallel
+      const [
+        tokenInfo,
+        liquidity,
+        holderDistribution,
+        transactionHistory
+      ] = await Promise.all([
+        this.solana.getTokenInfo(tokenAddress),
+        this.analyzeLiquidity(tokenAddress),
+        this.analyzeHolderDistribution(tokenAddress),
+        this.analyzeTransactionHistory(tokenAddress)
+      ]);
+
+      const score = this.calculateOnChainScore(
+        liquidity,
+        holderDistribution,
+        transactionHistory,
+        tokenInfo
+      );
 
       return {
         score,
@@ -340,10 +251,78 @@ export class RiskScoreService {
         holderDistribution,
         transactionHistory,
         contractInteractions: [],
-      }
+        timestamp: new Date().toISOString()
+      };
     } catch (error) {
-      throw new Error(`On-chain analysis failed: ${error.message}`)
+      if (error instanceof Error) {
+        throw new Error(`On-chain analysis failed: ${error.message}`);
+      }
+      throw new Error('On-chain analysis failed: Unknown error');
     }
+  }
+
+  private async storeRiskScoreHistory(tokenAddress: string, breakdown: RiskBreakdown): Promise<void> {
+    try {
+      await this.database.storeRiskScore({
+        tokenAddress,
+        breakdown,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to store risk score history: ${error.message}`);
+      }
+      throw new Error('Failed to store risk score history: Unknown error');
+    }
+  }
+
+  private calculateStaticScore(programInfo: any): number {
+    let score = 100;
+    
+    if (!programInfo.isVerified) score -= 30;
+    if (!programInfo.hasAudit) score -= 20;
+    if (!programInfo.hasLockedUpgradeAuthority) score -= 20;
+    
+    return Math.max(0, score);
+  }
+
+  private calculateDynamicScore(tokenBehavior: any): number {
+    let score = 100;
+    
+    if (tokenBehavior.priceVolatility > 0.5) score -= 30;
+    if (tokenBehavior.abnormalTradingScore > 0.3) score -= 30;
+    if (tokenBehavior.failedTransactions > 0.1) score -= 20;
+    
+    return Math.max(0, score);
+  }
+
+  private calculateOnChainScore(
+    liquidity: any,
+    holderDistribution: any,
+    transactionHistory: any,
+    tokenInfo: TokenInfo
+  ): number {
+    let score = 100;
+
+    // Liquidity impact (30%)
+    if (liquidity.liquidityRisk === 'critical') score -= 30;
+    else if (liquidity.liquidityRisk === 'high') score -= 20;
+    else if (liquidity.liquidityRisk === 'medium') score -= 10;
+
+    // Holder distribution impact (30%)
+    if (holderDistribution.concentration > 80) score -= 30;
+    else if (holderDistribution.concentration > 60) score -= 20;
+    else if (holderDistribution.concentration > 40) score -= 10;
+
+    // Transaction history impact (30%)
+    if (transactionHistory.risk === 'critical') score -= 30;
+    else if (transactionHistory.risk === 'high') score -= 20;
+    else if (transactionHistory.risk === 'medium') score -= 10;
+
+    // Token maturity bonus (10%)
+    if (tokenInfo.supply > 1000000000) score += 10;
+
+    return Math.max(0, Math.min(100, score));
   }
 
   private async analyzeLiquidity(tokenAddress: string) {
@@ -488,137 +467,5 @@ export class RiskScoreService {
         risk: 'critical' as RiskLevel,
       }
     }
-  }
-
-  private calculateOnChainScore(
-    liquidity: any,
-    holderDistribution: any,
-    transactionHistory: any,
-    tokenInfo: any
-  ): number {
-    let score = 100
-
-    // Deduct points based on liquidity risk
-    switch (liquidity.liquidityRisk) {
-      case 'critical': score -= 40; break
-      case 'high': score -= 25; break
-      case 'medium': score -= 15; break
-      case 'low': score -= 5; break
-    }
-
-    // Deduct points based on holder concentration
-    if (holderDistribution.concentration > 80) {
-      score -= 30
-    } else if (holderDistribution.concentration > 60) {
-      score -= 20
-    } else if (holderDistribution.concentration > 40) {
-      score -= 10
-    }
-
-    // Deduct points based on transaction risk
-    switch (transactionHistory.risk) {
-      case 'critical': score -= 25; break
-      case 'high': score -= 15; break
-      case 'medium': score -= 10; break
-      case 'low': score -= 5; break
-    }
-
-    // Bonus points for established tokens
-    if (tokenInfo.supply > 1000000000) { // 1B+ supply
-      score += 5
-    }
-
-    return Math.max(0, Math.min(100, score))
-  }
-
-  private async calculateLiquidityScore(tokenAddress: string): Promise<number> {
-    const liquidityInfo = await this.solana.getTokenLiquidity(tokenAddress);
-    
-    // Score based on liquidity depth and stability
-    const depthScore = Math.min(25, (liquidityInfo.totalLiquidity / 1000000) * 25);
-    const stabilityScore = Math.min(25, (liquidityInfo.lastWeekStability / 100) * 25);
-    
-    return (depthScore + stabilityScore) / 2;
-  }
-
-  private async calculateHoldersScore(tokenAddress: string): Promise<number> {
-    const holderInfo = await this.solana.getTokenHolders(tokenAddress);
-    
-    // Score based on holder distribution and count
-    const distributionScore = Math.min(25, (holderInfo.giniCoefficient) * 25);
-    const countScore = Math.min(25, (Math.log10(holderInfo.uniqueHolders) / 4) * 25);
-    
-    return (distributionScore + countScore) / 2;
-  }
-
-  private async calculateProgramSecurityScore(tokenAddress: string): Promise<number> {
-    const securityInfo = await this.solana.getTokenProgram(tokenAddress);
-    
-    // Score based on program verification and audit status
-    const verificationScore = securityInfo.isVerified ? 25 : 0;
-    const auditScore = securityInfo.hasAudit ? 25 : 0;
-    const upgradeAuthorityScore = securityInfo.hasLockedUpgradeAuthority ? 25 : 0;
-    
-    return (verificationScore + auditScore + upgradeAuthorityScore) / 3;
-  }
-
-  private async calculateMarketBehaviorScore(tokenAddress: string): Promise<number> {
-    const marketInfo = await this.solana.getMarketBehavior(tokenAddress);
-    
-    // Score based on price stability and trading patterns
-    const priceStabilityScore = Math.min(25, (1 - marketInfo.priceVolatility) * 25);
-    const tradingPatternScore = Math.min(25, (1 - marketInfo.abnormalTradingScore) * 25);
-    
-    return (priceStabilityScore + tradingPatternScore) / 2;
-  }
-
-  private async calculateOverallScore(
-    tokenAddress: string,
-    options: RiskScoreOptions = {}
-  ): Promise<RiskScore> {
-    const factors: RiskFactors = {
-      liquidity: await this.calculateLiquidityScore(tokenAddress),
-      holders: await this.calculateHoldersScore(tokenAddress),
-      programSecurity: await this.calculateProgramSecurityScore(tokenAddress),
-      marketBehavior: await this.calculateMarketBehaviorScore(tokenAddress)
-    };
-
-    const overallScore = (
-      factors.liquidity +
-      factors.holders +
-      factors.programSecurity +
-      factors.marketBehavior
-    ) / 4;
-
-    const breakdown: RiskBreakdown = {
-      totalScore: overallScore,
-      factors: {
-        liquidity: factors.liquidity,
-        holders: factors.holders,
-        programSecurity: factors.programSecurity,
-        marketBehavior: factors.marketBehavior
-      },
-      timestamp: new Date().toISOString()
-    };
-
-    // Store risk score history if enabled
-    if (options.includeHistory) {
-      await this.storeRiskScoreHistory(tokenAddress, breakdown);
-    }
-
-    return {
-      score: overallScore,
-      breakdown,
-      level: this.getRiskLevel(overallScore),
-      timestamp: new Date().toISOString(),
-      tokenAddress
-    };
-  }
-
-  private getRiskLevel(score: number): RiskLevel {
-    if (score >= 80) return 'low'
-    if (score >= 60) return 'medium'
-    if (score >= 40) return 'high'
-    return 'critical'
   }
 }

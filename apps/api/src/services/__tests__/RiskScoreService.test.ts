@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RiskScoreService } from '../RiskScoreService';
 import { DatabaseService } from '../DatabaseService';
 import { SolanaService } from '../SolanaService';
+import { RiskLevel, RiskScore, RiskBreakdown, StaticAnalysisDetails as StaticAnalysis, DynamicAnalysisDetails as DynamicAnalysis, OnChainAnalysisDetails as OnChainAnalysis } from '@sol-guard/types';
 
 // Mock dependencies
 vi.mock('../DatabaseService');
@@ -9,107 +10,169 @@ vi.mock('../SolanaService');
 
 describe('RiskScoreService', () => {
   let riskScoreService: RiskScoreService;
-  let mockDatabase: jest.Mocked<DatabaseService>;
-  let mockSolana: jest.Mocked<SolanaService>;
+  let mockDatabase: DatabaseService;
+  let mockSolana: SolanaService;
+
+  const mockStaticAnalysis: StaticAnalysis = {
+    vulnerabilities: [],
+    codeQuality: 90,
+    securityPatterns: []
+  };
+
+  const mockDynamicAnalysis: DynamicAnalysis = {
+    runtimeBehavior: [],
+    gasUsage: {
+      average: 1000,
+      max: 2000,
+      min: 500,
+      distribution: []
+    },
+    executionPaths: []
+  };
+
+  const mockOnChainAnalysis: OnChainAnalysis = {
+    liquidity: {
+      totalLiquidity: 1000000,
+      liquidityPools: [],
+      liquidityRisk: 'low'
+    },
+    holderDistribution: {
+      totalHolders: 1000,
+      topHolders: [],
+      distributionRisk: 'low',
+      concentration: 30
+    },
+    transactionHistory: {
+      totalTransactions: 10000,
+      volume24h: 1000000,
+      averageTransactionSize: 100,
+      suspiciousTransactions: [],
+      risk: 'low'
+    },
+    contractInteractions: []
+  };
 
   beforeEach(() => {
-    mockDatabase = new DatabaseService() as jest.Mocked<DatabaseService>;
-    mockSolana = new SolanaService('mock-url') as jest.Mocked<SolanaService>;
+    mockDatabase = {
+      storeRiskScore: vi.fn(),
+      getRiskScoreHistory: vi.fn()
+    } as any;
+
+    mockSolana = {
+      getTokenInfo: vi.fn(),
+      getTokenLiquidity: vi.fn(),
+      getTokenHolders: vi.fn(),
+      getTokenProgram: vi.fn(),
+      getMarketBehavior: vi.fn(),
+      getTokenTransactions: vi.fn()
+    } as any;
+
     riskScoreService = new RiskScoreService(mockDatabase, mockSolana);
+
+    vi.spyOn(riskScoreService as any, 'performStaticAnalysis')
+      .mockResolvedValue(mockStaticAnalysis);
+    vi.spyOn(riskScoreService as any, 'performDynamicAnalysis')
+      .mockResolvedValue(mockDynamicAnalysis);
+    vi.spyOn(riskScoreService as any, 'performOnChainAnalysis')
+      .mockResolvedValue(mockOnChainAnalysis);
   });
 
   describe('calculateRiskScore', () => {
     it('should calculate risk score correctly', async () => {
-      // Mock dependencies responses
-      mockSolana.getTokenLiquidity.mockResolvedValue({
-        totalLiquidity: 1000000,
-        lastWeekStability: 90,
-        liquidityPools: []
-      });
-
-      mockSolana.getTokenHolders.mockResolvedValue({
-        uniqueHolders: 1000,
-        giniCoefficient: 0.3,
-        holders: []
-      });
-
-      mockSolana.getTokenProgram.mockResolvedValue({
-        isVerified: true,
-        hasAudit: true,
-        hasLockedUpgradeAuthority: true,
-        programData: {
-          lastDeployment: new Date().toISOString(),
-          version: '1.0.0'
-        }
-      });
-
-      mockSolana.getMarketBehavior.mockResolvedValue({
-        priceVolatility: 0.1,
-        abnormalTradingScore: 0.1,
-        lastTradeTime: new Date().toISOString(),
-        volume24h: 1000000,
-        priceChange24h: 0.5
-      });
-
-      // Calculate risk score
       const result = await riskScoreService.calculateRiskScore('mock-token-address');
 
-      // Verify result structure
       expect(result).toHaveProperty('score');
       expect(result).toHaveProperty('breakdown');
       expect(result).toHaveProperty('level');
       expect(result).toHaveProperty('timestamp');
       expect(result).toHaveProperty('tokenAddress');
 
-      // Verify score range
-      expect(result.score).toBeGreaterThanOrEqual(0);
-      expect(result.score).toBeLessThanOrEqual(100);
+      // Expected score = (85 * 0.3) + (75 * 0.3) + (90 * 0.4) = 84
+      expect(result.score).toBeCloseTo(84, 1);
+      expect(result.level).toBe('low');
     });
 
     it('should use cache for repeated requests', async () => {
-      // First request
       const result1 = await riskScoreService.calculateRiskScore('mock-token-address');
       
-      // Mock services should have been called
-      expect(mockSolana.getTokenLiquidity).toHaveBeenCalledTimes(1);
-      expect(mockSolana.getTokenHolders).toHaveBeenCalledTimes(1);
-      expect(mockSolana.getTokenProgram).toHaveBeenCalledTimes(1);
-      expect(mockSolana.getMarketBehavior).toHaveBeenCalledTimes(1);
+      expect(riskScoreService['performStaticAnalysis']).toHaveBeenCalledTimes(1);
+      expect(riskScoreService['performDynamicAnalysis']).toHaveBeenCalledTimes(1);
+      expect(riskScoreService['performOnChainAnalysis']).toHaveBeenCalledTimes(1);
 
-      // Second request
       const result2 = await riskScoreService.calculateRiskScore('mock-token-address');
       
-      // Services should not have been called again
-      expect(mockSolana.getTokenLiquidity).toHaveBeenCalledTimes(1);
-      expect(mockSolana.getTokenHolders).toHaveBeenCalledTimes(1);
-      expect(mockSolana.getTokenProgram).toHaveBeenCalledTimes(1);
-      expect(mockSolana.getMarketBehavior).toHaveBeenCalledTimes(1);
+      expect(riskScoreService['performStaticAnalysis']).toHaveBeenCalledTimes(1);
+      expect(riskScoreService['performDynamicAnalysis']).toHaveBeenCalledTimes(1);
+      expect(riskScoreService['performOnChainAnalysis']).toHaveBeenCalledTimes(1);
 
-      // Results should be identical
       expect(result2).toEqual(result1);
     });
 
-    it('should handle errors gracefully', async () => {
-      // Mock service error
-      mockSolana.getTokenLiquidity.mockRejectedValue(new Error('RPC error'));
+    it('should handle static analysis errors gracefully', async () => {
+      vi.spyOn(riskScoreService as any, 'performStaticAnalysis')
+        .mockRejectedValue(new Error('Static analysis failed'));
 
-      // Attempt to calculate risk score
       await expect(
         riskScoreService.calculateRiskScore('mock-token-address')
-      ).rejects.toThrow('Failed to calculate risk score');
+      ).rejects.toThrow('Failed to calculate risk score: Static analysis failed');
+    });
+
+    it('should store history when includeHistory option is true', async () => {
+      await riskScoreService.calculateRiskScore('mock-token-address', { includeHistory: true });
+      expect(mockDatabase.storeRiskScore).toHaveBeenCalled();
+    });
+  });
+
+  describe('getRiskScoreHistory', () => {
+    it('should return risk score history', async () => {
+      const mockHistory = [
+        {
+          tokenAddress: 'mock-token-address',
+          score: 85,
+          timestamp: new Date().toISOString(),
+          breakdown: {
+            staticAnalysis: 85,
+            dynamicAnalysis: 75,
+            onChainAnalysis: 90,
+            details: {
+              staticAnalysis: mockStaticAnalysis,
+              dynamicAnalysis: mockDynamicAnalysis,
+              onChainAnalysis: mockOnChainAnalysis
+            }
+          },
+          level: 'low' as RiskLevel
+        }
+      ];
+
+      vi.spyOn(mockDatabase, 'getRiskScoreHistory').mockImplementation(async () => mockHistory);
+
+      const history = await riskScoreService.getRiskScoreHistory('mock-token-address');
+      expect(history).toEqual(mockHistory);
+    });
+
+    it('should handle database errors', async () => {
+      vi.spyOn(mockDatabase, 'getRiskScoreHistory').mockImplementation(async () => {
+        throw new Error('Database error');
+      });
+
+      await expect(
+        riskScoreService.getRiskScoreHistory('mock-token-address')
+      ).rejects.toThrow('Failed to get risk score history: Database error');
     });
   });
 
   describe('getRiskLevel', () => {
-    it('should return correct risk levels', () => {
-      const service = new RiskScoreService(mockDatabase, mockSolana);
-      
-      expect(service['getRiskLevel'](100)).toBe('LOW');
-      expect(service['getRiskLevel'](76)).toBe('LOW');
-      expect(service['getRiskLevel'](75)).toBe('MEDIUM');
-      expect(service['getRiskLevel'](50)).toBe('HIGH');
-      expect(service['getRiskLevel'](25)).toBe('MEDIUM');
-      expect(service['getRiskLevel'](0)).toBe('LOW');
+    const testCases = [
+      { score: 90, expected: 'low' },
+      { score: 70, expected: 'medium' },
+      { score: 50, expected: 'high' },
+      { score: 20, expected: 'critical' },
+    ];
+
+    testCases.forEach(({ score, expected }) => {
+      it(`should return ${expected} for score ${score}`, () => {
+        expect(riskScoreService['getRiskLevel'](score)).toBe(expected);
+      });
     });
   });
 });

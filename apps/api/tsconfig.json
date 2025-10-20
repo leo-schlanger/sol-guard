@@ -10,17 +10,21 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "composite": true,
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@shared/*": ["../../packages/shared/*"],
-      "@types/*": ["../../packages/types/*"]
+      "@shared/*": ["../../packages/shared/src/*"],
+      "@sol-guard/types": ["../../packages/types/src"]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "../../packages/types/src/**/*"],
+  "exclude": ["node_modules", "dist"],
+  "references": [
+    { "path": "../../packages/types" }
+  ]
 }
