@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js'
 
 // Risk Score Types
+export * from './riskscore';
 export interface RiskScore {
   score: number // 0-100
   level: RiskLevel
