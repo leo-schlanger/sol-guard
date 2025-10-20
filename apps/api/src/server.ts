@@ -1,17 +1,20 @@
-import Fastify from 'fastify'
-import cors from '@fastify/cors'
-import helmet from '@fastify/helmet'
-import rateLimit from '@fastify/rate-limit'
-import swagger from '@fastify/swagger'
-import swaggerUi from '@fastify/swagger-ui'
-import jwt from '@fastify/jwt'
-import multipart from '@fastify/multipart'
-import { config } from './config'
-import { registerRoutes } from './routes'
-import { registerServices } from './services'
-import { registerApiRoutes } from './services/api/gateway'
-import { certificationEngine } from './services/certification/cnft-engine'
-import { realTimeMonitor } from './services/monitoring/real-time-engine'
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
+import jwt from '@fastify/jwt';
+import multipart from '@fastify/multipart';
+import { config } from './config';
+import { registerRoutes } from './routes';
+import { registerServices } from './services';
+import { registerApiRoutes } from './services/api/gateway';
+import { certificationEngine } from './services/certification/cnft-engine';
+import { realTimeMonitor } from './services/monitoring/real-time-engine';
+import { DatabaseService } from './database';
+import { SolanaService } from './services/SolanaService';
+import { RiskScoreService } from './services/RiskScoreService';
 
 const fastify = Fastify({
   logger: {

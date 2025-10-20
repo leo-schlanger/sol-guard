@@ -1,0 +1,43 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model RiskScore {
+  id           Int      @id @default(autoincrement())
+  tokenAddress String
+  score        Float
+  timestamp    DateTime
+  breakdown    Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tokenAddress])
+  @@index([timestamp])
+}
+
+model ApiKey {
+  id         Int       @id @default(autoincrement())
+  key        String    @unique
+  userId     String
+  type       String
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  usage      ApiUsage[]
+}
+
+model ApiUsage {
+  id        Int      @id @default(autoincrement())
+  apiKey    ApiKey   @relation(fields: [apiKeyId], references: [id])
+  apiKeyId  Int
+  endpoint  String
+  method    String
+  timestamp DateTime @default(now())
+
+  @@index([apiKeyId])
+}

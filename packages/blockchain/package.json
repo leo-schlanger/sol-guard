@@ -1,0 +1,31 @@
+{
+  "name": "@sol-guard/blockchain",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "test": "vitest",
+    "lint": "eslint src --ext .ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@project-serum/serum": "^0.13.65",
+    "@solana/spl-token-registry": "^0.2.4574",
+    "@solana/web3.js": "^1.78.4",
+    "zod": "^3.22.2",
+    "p-retry": "^5.1.1",
+    "p-queue": "^8.0.1",
+    "lru-cache": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0",
+    "typescript": "^5.2.2",
+    "vitest": "^0.34.6",
+    "eslint": "^8.45.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0"
+  }
+}

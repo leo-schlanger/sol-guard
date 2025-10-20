@@ -96,3 +96,66 @@ export class ValidationException extends Error {
     this.name = 'ValidationException'
   }
 }
+
+// Risk Score Types
+export interface RiskFactors {
+  liquidity: number
+  holders: number
+  programSecurity: number
+  marketBehavior: number
+}
+
+export interface RiskBreakdown {
+  totalScore: number
+  factors: RiskFactors
+  timestamp: string
+}
+
+export interface RiskScore {
+  score: number
+  breakdown: RiskBreakdown
+  level: RiskLevel
+  timestamp: string
+  tokenAddress: string
+}
+
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
+// Token Analysis Types
+export interface TokenLiquidity {
+  totalLiquidity: number
+  lastWeekStability: number
+  liquidityPools: Array<{
+    pool: string
+    liquidity: number
+  }>
+}
+
+export interface TokenHolders {
+  uniqueHolders: number
+  giniCoefficient: number
+  holders: Array<{
+    address: string
+    balance: string
+    percentage: number
+  }>
+}
+
+export interface TokenProgram {
+  isVerified: boolean
+  hasAudit: boolean
+  hasLockedUpgradeAuthority: boolean
+  upgradeAuthority?: string
+  programData: {
+    lastDeployment: string
+    version: string
+  }
+}
+
+export interface MarketBehavior {
+  priceVolatility: number
+  abnormalTradingScore: number
+  lastTradeTime: string
+  volume24h: number
+  priceChange24h: number
+}

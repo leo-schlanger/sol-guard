@@ -1,15 +1,15 @@
-import { Pool } from 'pg'
-import { config } from '../config'
-import { RiskScore } from '@sol-guard/types'
+import { Pool } from 'pg';
+import { config } from '../config';
+import { RiskScore, RiskBreakdown } from '@sol-guard/types';
 
 export class DatabaseService {
-  private pool: Pool
+  private pool: Pool;
 
   constructor() {
     this.pool = new Pool({
       connectionString: config.DATABASE_URL,
       ssl: config.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-    })
+    });
   }
 
   async initialize(): Promise<void> {
@@ -105,31 +105,76 @@ export class DatabaseService {
     ])
   }
 
-  async getRiskScoreHistory(
-    tokenAddress: string,
-    options: { limit: number; offset: number }
-  ): Promise<RiskScore[]> {
+  async createRiskScore(data: {
+    tokenAddress: string;
+    score: number;
+    breakdown: RiskBreakdown;
+  }): Promise<void> {
     const query = `
-      SELECT token_address, score, level, breakdown, created_at
+      INSERT INTO risk_scores (token_address, score, breakdown, created_at)
+      VALUES ($1, $2, $3, NOW())
+    `;
+
+    await this.pool.query(query, [
+      data.tokenAddress,
+      data.score,
+      JSON.stringify(data.breakdown)
+    ]);
+  }
+
+  async getRiskScore(tokenAddress: string): Promise<RiskScore | null> {
+    const query = `
+      SELECT token_address, score, breakdown::jsonb, created_at
       FROM risk_scores
       WHERE token_address = $1
       ORDER BY created_at DESC
-      LIMIT $2 OFFSET $3
-    `
-    
-    const result = await this.pool.query(query, [
-      tokenAddress,
-      options.limit,
-      options.offset,
-    ])
+      LIMIT 1
+    `;
 
+    const result = await this.pool.query(query, [tokenAddress]);
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    return {
+      tokenAddress: row.token_address,
+      score: row.score,
+      breakdown: row.breakdown,
+      timestamp: row.created_at.toISOString(),
+      level: this.getRiskLevel(row.score)
+    };
+  }
+
+  async getRiskScoreHistory(
+    tokenAddress: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<Array<{ score: number; timestamp: string; breakdown: RiskBreakdown }>> {
+    const query = `
+      SELECT score, created_at, breakdown::jsonb
+      FROM risk_scores
+      WHERE token_address = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+      OFFSET $3
+    `;
+
+    const result = await this.pool.query(query, [tokenAddress, limit, offset]);
+    
     return result.rows.map(row => ({
       score: row.score,
-      level: row.level,
-      breakdown: row.breakdown,
-      timestamp: row.created_at,
-      tokenAddress: row.token_address,
-    }))
+      timestamp: row.created_at.toISOString(),
+      breakdown: row.breakdown
+    }));
+  }
+
+  private getRiskLevel(score: number): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
+    if (score >= 75) return 'CRITICAL';
+    if (score >= 50) return 'HIGH';
+    if (score >= 25) return 'MEDIUM';
+    return 'LOW';
   }
 
   async getUserById(id: string) {

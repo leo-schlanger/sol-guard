@@ -1,53 +1,260 @@
-import { RiskScore, RiskLevel, RiskBreakdown } from '@sol-guard/types'
-import { DatabaseService } from './DatabaseService'
-import { SolanaService } from './SolanaService'
+import {
+  RiskScore,
+  RiskLevel,
+  RiskBreakdown,
+  RiskScoreOptions,
+  RiskFactors,
+  TokenLiquidity,
+  TokenHolders,
+  TokenProgram,
+  MarketBehavior
+} from '@sol-guard/types';
+import { DatabaseService } from './DatabaseService';
+import { SolanaService } from './SolanaService';
+import { z } from 'zod';
+import pRetry from 'p-retry';
+import LRUCache from 'lru-cache';
 
-export interface RiskScoreOptions {
-  includeHistory?: boolean
-  includeDetailedReport?: boolean
-}
-
-export interface RiskScoreHistoryOptions {
-  limit: number
-  offset: number
-}
+const DEFAULT_WEIGHTS = {
+  liquidity: 0.25,
+  holders: 0.25,
+  programSecurity: 0.25,
+  marketBehavior: 0.25
+};
 
 export class RiskScoreService {
+  private cache: LRUCache<string, RiskScore>;
+  
   constructor(
     private database: DatabaseService,
     private solana: SolanaService
-  ) {}
+  ) {
+    this.cache = new LRUCache({
+      max: 1000,
+      ttl: 1000 * 60 * 5 // 5 minutes
+    });
+  }
 
   async calculateRiskScore(
     tokenAddress: string,
     options: RiskScoreOptions = {}
   ): Promise<RiskScore> {
-    const startTime = Date.now()
-
     try {
-      // Get token information from Solana
-      const tokenInfo = await this.solana.getTokenInfo(tokenAddress)
-      
-      // Perform static analysis (placeholder)
-      const staticAnalysis = await this.performStaticAnalysis(tokenAddress)
-      
-      // Perform dynamic analysis (placeholder)
-      const dynamicAnalysis = await this.performDynamicAnalysis(tokenAddress)
-      
-      // Perform on-chain analysis
-      const onChainAnalysis = await this.performOnChainAnalysis(tokenAddress)
+      // Check cache first
+      const cached = this.cache.get(tokenAddress);
+      if (cached && !options.includeHistory) {
+        return cached;
+      }
 
-      // Calculate overall risk score
-      const score = this.calculateOverallScore(
-        staticAnalysis,
-        dynamicAnalysis,
-        onChainAnalysis
-      )
+      const [liquidityScore, holdersScore, programSecurityScore, marketBehaviorScore] = 
+        await Promise.all([
+          this.calculateLiquidityScore(tokenAddress),
+          this.calculateHoldersScore(tokenAddress),
+          this.calculateProgramSecurityScore(tokenAddress),
+          this.calculateMarketBehaviorScore(tokenAddress)
+        ]);
 
-      const level = this.getRiskLevel(score)
+      const weights = options.customWeights || DEFAULT_WEIGHTS;
+      
+      const factors: RiskFactors = {
+        liquidity: liquidityScore,
+        holders: holdersScore,
+        programSecurity: programSecurityScore,
+        marketBehavior: marketBehaviorScore
+      };
+
+      const totalScore = 
+        factors.liquidity * weights.liquidity +
+        factors.holders * weights.holders +
+        factors.programSecurity * weights.programSecurity +
+        factors.marketBehavior * weights.marketBehavior;
 
       const riskScore: RiskScore = {
-        score,
+        score: Math.round(totalScore * 100) / 100,
+        breakdown: {
+          totalScore,
+          factors,
+          timestamp: new Date().toISOString()
+        },
+        level: this.getRiskLevel(totalScore),
+        timestamp: new Date().toISOString(),
+        tokenAddress
+      };
+
+      // Store risk score history if enabled
+      if (options.includeHistory) {
+        await this.storeRiskScoreHistory(tokenAddress, riskScore.breakdown);
+      }
+
+      // Cache the result
+      this.cache.set(tokenAddress, riskScore);
+
+      return riskScore;
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to calculate risk score: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  async getRiskScoreHistory(
+    tokenAddress: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<Array<{ score: number; timestamp: string; breakdown: RiskBreakdown }>> {
+    try {
+      const history = await this.database.riskScores.findMany({
+        where: { tokenAddress },
+        orderBy: { timestamp: 'desc' },
+        take: limit,
+        skip: offset
+      });
+
+      return history.map(record => ({
+        score: record.score,
+        timestamp: record.timestamp,
+        breakdown: JSON.parse(record.breakdown)
+      }));
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to get risk score history: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  private getRiskLevel(score: number): RiskLevel {
+    if (score >= 75) return 'CRITICAL';
+    if (score >= 50) return 'HIGH';
+    if (score >= 25) return 'MEDIUM';
+    return 'LOW';
+  }
+
+  private async calculateLiquidityScore(tokenAddress: string): Promise<number> {
+    const liquidityInfo = await pRetry(
+      () => this.solana.getTokenLiquidity(tokenAddress),
+      { retries: 3 }
+    );
+
+    // Score based on liquidity depth (60%) and stability (40%)
+    const depthScore = Math.min(60, (liquidityInfo.totalLiquidity / 1000000) * 60);
+    const stabilityScore = Math.min(40, (liquidityInfo.lastWeekStability / 100) * 40);
+
+    return (depthScore + stabilityScore) / 100;
+  }
+
+  private async calculateHoldersScore(tokenAddress: string): Promise<number> {
+    const holderInfo = await pRetry(
+      () => this.solana.getTokenHolders(tokenAddress),
+      { retries: 3 }
+    );
+
+    // Score based on holder distribution (40%) and count (60%)
+    const distributionScore = Math.min(40, (1 - holderInfo.giniCoefficient) * 40);
+    const countScore = Math.min(60, (Math.log10(holderInfo.uniqueHolders) / 4) * 60);
+
+    return (distributionScore + countScore) / 100;
+  }
+
+  private async calculateProgramSecurityScore(tokenAddress: string): Promise<number> {
+    const securityInfo = await pRetry(
+      () => this.solana.getTokenProgram(tokenAddress),
+      { retries: 3 }
+    );
+
+    let score = 0;
+
+    // Verification status (40%)
+    if (securityInfo.isVerified) score += 40;
+
+    // Audit status (30%)
+    if (securityInfo.hasAudit) score += 30;
+
+    // Upgrade authority status (30%)
+    if (securityInfo.hasLockedUpgradeAuthority) score += 30;
+
+    return score / 100;
+  }
+
+  private async calculateMarketBehaviorScore(tokenAddress: string): Promise<number> {
+    const marketInfo = await pRetry(
+      () => this.solana.getMarketBehavior(tokenAddress),
+      { retries: 3 }
+    );
+
+    // Score based on price stability (50%) and trading patterns (50%)
+    const volatilityScore = Math.min(50, (1 - marketInfo.priceVolatility) * 50);
+    const patternScore = Math.min(50, (1 - marketInfo.abnormalTradingScore) * 50);
+
+    return (volatilityScore + patternScore) / 100;
+  }
+
+  private async storeRiskScoreHistory(tokenAddress: string, breakdown: RiskBreakdown): Promise<void> {
+    const timestamp = new Date().toISOString();
+    
+    try {
+      await this.database.riskScores.create({
+        data: {
+          tokenAddress,
+          score: breakdown.totalScore,
+          timestamp,
+          breakdown: JSON.stringify(breakdown)
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to store risk score history: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  async calculateRiskScore(
+    tokenAddress: string,
+    options: RiskScoreOptions = {}
+  ): Promise<RiskScore> {
+    try {
+      // Check cache first
+      const cached = this.cache.get(tokenAddress);
+      if (cached && !options.includeHistory) {
+        return cached;
+      }
+
+      const [liquidityScore, holdersScore, programSecurityScore, marketBehaviorScore] = 
+        await Promise.all([
+          this.calculateLiquidityScore(tokenAddress),
+          this.calculateHoldersScore(tokenAddress),
+          this.calculateProgramSecurityScore(tokenAddress),
+          this.calculateMarketBehaviorScore(tokenAddress)
+        ]);
+
+      const weights = options.customWeights || DEFAULT_WEIGHTS;
+      
+      const factors: RiskFactors = {
+        liquidity: liquidityScore,
+        holders: holdersScore,
+        programSecurity: programSecurityScore,
+        marketBehavior: marketBehaviorScore
+      };
+
+      const totalScore = 
+        factors.liquidity * weights.liquidity +
+        factors.holders * weights.holders +
+        factors.programSecurity * weights.programSecurity +
+        factors.marketBehavior * weights.marketBehavior;
+
+      const riskScore: RiskScore = {
+        score: Math.round(totalScore * 100) / 100,
+        breakdown: {
+          totalScore,
+          factors,
+          timestamp: new Date().toISOString()
+        },
+        level: this.getRiskLevel(totalScore),
+        timestamp: new Date().toISOString(),
+        tokenAddress
+      };
         level,
         breakdown: {
           staticAnalysis: staticAnalysis.score,
@@ -324,23 +531,88 @@ export class RiskScoreService {
     return Math.max(0, Math.min(100, score))
   }
 
-  private calculateOverallScore(
-    staticAnalysis: any,
-    dynamicAnalysis: any,
-    onChainAnalysis: any
-  ): number {
-    // Weighted average of the three analysis types
-    const weights = {
-      static: 0.4,
-      dynamic: 0.3,
-      onChain: 0.3,
+  private async calculateLiquidityScore(tokenAddress: string): Promise<number> {
+    const liquidityInfo = await this.solana.getTokenLiquidity(tokenAddress);
+    
+    // Score based on liquidity depth and stability
+    const depthScore = Math.min(25, (liquidityInfo.totalLiquidity / 1000000) * 25);
+    const stabilityScore = Math.min(25, (liquidityInfo.lastWeekStability / 100) * 25);
+    
+    return (depthScore + stabilityScore) / 2;
+  }
+
+  private async calculateHoldersScore(tokenAddress: string): Promise<number> {
+    const holderInfo = await this.solana.getTokenHolders(tokenAddress);
+    
+    // Score based on holder distribution and count
+    const distributionScore = Math.min(25, (holderInfo.giniCoefficient) * 25);
+    const countScore = Math.min(25, (Math.log10(holderInfo.uniqueHolders) / 4) * 25);
+    
+    return (distributionScore + countScore) / 2;
+  }
+
+  private async calculateProgramSecurityScore(tokenAddress: string): Promise<number> {
+    const securityInfo = await this.solana.getTokenProgram(tokenAddress);
+    
+    // Score based on program verification and audit status
+    const verificationScore = securityInfo.isVerified ? 25 : 0;
+    const auditScore = securityInfo.hasAudit ? 25 : 0;
+    const upgradeAuthorityScore = securityInfo.hasLockedUpgradeAuthority ? 25 : 0;
+    
+    return (verificationScore + auditScore + upgradeAuthorityScore) / 3;
+  }
+
+  private async calculateMarketBehaviorScore(tokenAddress: string): Promise<number> {
+    const marketInfo = await this.solana.getMarketBehavior(tokenAddress);
+    
+    // Score based on price stability and trading patterns
+    const priceStabilityScore = Math.min(25, (1 - marketInfo.priceVolatility) * 25);
+    const tradingPatternScore = Math.min(25, (1 - marketInfo.abnormalTradingScore) * 25);
+    
+    return (priceStabilityScore + tradingPatternScore) / 2;
+  }
+
+  private async calculateOverallScore(
+    tokenAddress: string,
+    options: RiskScoreOptions = {}
+  ): Promise<RiskScore> {
+    const factors: RiskFactors = {
+      liquidity: await this.calculateLiquidityScore(tokenAddress),
+      holders: await this.calculateHoldersScore(tokenAddress),
+      programSecurity: await this.calculateProgramSecurityScore(tokenAddress),
+      marketBehavior: await this.calculateMarketBehaviorScore(tokenAddress)
+    };
+
+    const overallScore = (
+      factors.liquidity +
+      factors.holders +
+      factors.programSecurity +
+      factors.marketBehavior
+    ) / 4;
+
+    const breakdown: RiskBreakdown = {
+      totalScore: overallScore,
+      factors: {
+        liquidity: factors.liquidity,
+        holders: factors.holders,
+        programSecurity: factors.programSecurity,
+        marketBehavior: factors.marketBehavior
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    // Store risk score history if enabled
+    if (options.includeHistory) {
+      await this.storeRiskScoreHistory(tokenAddress, breakdown);
     }
 
-    return Math.round(
-      staticAnalysis.score * weights.static +
-      dynamicAnalysis.score * weights.dynamic +
-      onChainAnalysis.score * weights.onChain
-    )
+    return {
+      score: overallScore,
+      breakdown,
+      level: this.getRiskLevel(overallScore),
+      timestamp: new Date().toISOString(),
+      tokenAddress
+    };
   }
 
   private getRiskLevel(score: number): RiskLevel {

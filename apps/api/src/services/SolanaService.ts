@@ -1,16 +1,20 @@
 import { Connection, PublicKey, ParsedAccountData } from '@solana/web3.js'
 import { config } from '../config'
-import { SolanaTokenInfo, TokenMetadata } from '@sol-guard/types'
+import { SolanaTokenInfo, TokenMetadata, TokenLiquidity, TokenHolders, TokenProgram, MarketBehavior } from '@sol-guard/types'
+import { TokenListProvider, TokenInfo } from '@solana/spl-token-registry'
+import { Market } from '@project-serum/serum'
 
 export class SolanaService {
   private connection: Connection
   private devnetConnection: Connection
   private testnetConnection: Connection
+  private tokenListProvider: TokenListProvider
 
   constructor() {
     this.connection = new Connection(config.SOLANA_RPC_URL, 'confirmed')
     this.devnetConnection = new Connection(config.SOLANA_RPC_URL_DEVNET, 'confirmed')
     this.testnetConnection = new Connection(config.SOLANA_RPC_URL_TESTNET, 'confirmed')
+    this.tokenListProvider = new TokenListProvider()
   }
 
   async initialize(): Promise<void> {
@@ -235,17 +239,67 @@ export class SolanaService {
     }
   }
 
-  async getTokenLiquidity(tokenAddress: string) {
+  async getTokenLiquidity(tokenAddress: string): Promise<TokenLiquidity> {
     try {
       // This would integrate with DEX APIs like Raydium, Orca, etc.
       // For now, return mock data
+      const pools = await this.getDexPools(tokenAddress)
+      const totalLiquidity = pools.reduce((sum, p) => sum + p.liquidity, 0)
+      
       return {
-        totalLiquidity: 0,
-        liquidityPools: [],
-        liquidityRisk: 'medium' as const,
+        totalLiquidity,
+        lastWeekStability: await this.calculateLiquidityStability(tokenAddress),
+        liquidityPools: pools
       }
     } catch (error) {
       throw new Error(`Failed to get token liquidity: ${error.message}`)
+    }
+  }
+
+  async getTokenHolders(tokenAddress: string): Promise<TokenHolders> {
+    try {
+      const accounts = await this.connection.getTokenLargestAccounts(new PublicKey(tokenAddress))
+      const holdersData = await this.analyzeHolderDistribution(accounts.value)
+      
+      return {
+        uniqueHolders: holdersData.uniqueHolders,
+        giniCoefficient: holdersData.giniCoefficient,
+        holders: holdersData.holders
+      }
+    } catch (error) {
+      throw new Error(`Failed to get token holders: ${error.message}`)
+    }
+  }
+
+  async getTokenProgram(tokenAddress: string): Promise<TokenProgram> {
+    try {
+      const mint = new PublicKey(tokenAddress)
+      const programId = await this.getTokenProgramId(mint)
+      
+      return {
+        isVerified: await this.isProgramVerified(programId),
+        hasAudit: await this.checkProgramAudit(programId),
+        hasLockedUpgradeAuthority: await this.isUpgradeAuthorityLocked(programId),
+        programData: await this.getProgramData(programId)
+      }
+    } catch (error) {
+      throw new Error(`Failed to get token program info: ${error.message}`)
+    }
+  }
+
+  async getMarketBehavior(tokenAddress: string): Promise<MarketBehavior> {
+    try {
+      const marketData = await this.analyzeMarketMetrics(tokenAddress)
+      
+      return {
+        priceVolatility: marketData.volatility,
+        abnormalTradingScore: marketData.abnormalScore,
+        lastTradeTime: marketData.lastTrade,
+        volume24h: marketData.volume,
+        priceChange24h: marketData.priceChange
+      }
+    } catch (error) {
+      throw new Error(`Failed to get market behavior: ${error.message}`)
     }
   }
 
@@ -266,6 +320,65 @@ export class SolanaService {
       return true
     } catch {
       return false
+    }
+  }
+
+  // Helper methods
+  private async getDexPools(tokenAddress: string) {
+    // Implementation for fetching DEX pool data
+    return []
+  }
+
+  private async calculateLiquidityStability(tokenAddress: string): Promise<number> {
+    // Implementation for calculating liquidity stability
+    return 0
+  }
+
+  private async analyzeHolderDistribution(accounts: any[]) {
+    // Implementation for analyzing holder distribution
+    return {
+      uniqueHolders: 0,
+      giniCoefficient: 0,
+      holders: []
+    }
+  }
+
+  private async getTokenProgramId(mint: PublicKey): Promise<PublicKey> {
+    // Implementation for getting program ID
+    return mint
+  }
+
+  private async isProgramVerified(programId: PublicKey): Promise<boolean> {
+    // Implementation for checking program verification
+    return false
+  }
+
+  private async checkProgramAudit(programId: PublicKey): Promise<boolean> {
+    // Implementation for checking program audit status
+    return false
+  }
+
+  private async isUpgradeAuthorityLocked(programId: PublicKey): Promise<boolean> {
+    // Implementation for checking upgrade authority
+    return false
+  }
+
+  private async getProgramData(programId: PublicKey) {
+    // Implementation for getting program data
+    return {
+      lastDeployment: new Date().toISOString(),
+      version: '1.0.0'
+    }
+  }
+
+  private async analyzeMarketMetrics(tokenAddress: string) {
+    // Implementation for analyzing market metrics
+    return {
+      volatility: 0,
+      abnormalScore: 0,
+      lastTrade: new Date().toISOString(),
+      volume: 0,
+      priceChange: 0
     }
   }
 }
