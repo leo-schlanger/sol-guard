@@ -1,8 +1,9 @@
-import { Connection, ConnectionConfig } from '@solana/web3.js';
+import { Connection, ConnectionConfig, PublicKey, TransactionSignature } from '@solana/web3.js';
 import PQueue from 'p-queue';
 import pRetry from 'p-retry';
 import LRU from 'lru-cache';
 import { z } from 'zod';
+import { EventEmitter } from 'events';
 import {
   ConnectionManager,
   ConnectionManagerConfig,
@@ -10,6 +11,7 @@ import {
   EndpointHealth,
   ConnectionError,
 } from './types';
+import { TransactionMonitor, TransactionMonitorConfig } from './TransactionMonitor';
 
 const DEFAULT_CONFIG: Partial<ConnectionManagerConfig> = {
   healthCheckInterval: 30000, // 30 seconds
@@ -21,8 +23,9 @@ const DEFAULT_CONFIG: Partial<ConnectionManagerConfig> = {
   },
 };
 
-export class SolanaConnectionManager implements ConnectionManager {
+export class SolanaConnectionManager extends EventEmitter implements ConnectionManager {
   private connections: Map<string, Connection> = new Map();
+  private monitors: Map<string, TransactionMonitor> = new Map();
   private healthStatus: Map<string, EndpointHealth> = new Map();
   private currentEndpoint: string;
   private healthCheckInterval?: NodeJS.Timeout;
@@ -31,6 +34,7 @@ export class SolanaConnectionManager implements ConnectionManager {
   private retryOptions: pRetry.Options;
 
   constructor(private config: ConnectionManagerConfig) {
+    super();
     this.validateConfig(config);
     this.config = { ...DEFAULT_CONFIG, ...config } as ConnectionManagerConfig;
     this.currentEndpoint = this.config.defaultEndpoint || this.config.endpoints[0]?.url;
@@ -38,7 +42,7 @@ export class SolanaConnectionManager implements ConnectionManager {
       retries: this.config.maxRetries!,
       minTimeout: this.config.retryDelay!,
       maxTimeout: 10000,
-      onFailedAttempt: (error) => {
+      onFailedAttempt: (error: any) => {
         const endpoint = error.endpoint as string | undefined;
         if (endpoint) {
           this.recordFailure(endpoint, error);

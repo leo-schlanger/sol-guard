@@ -14,11 +14,16 @@
   "dependencies": {
     "@project-serum/serum": "^0.13.65",
     "@solana/spl-token-registry": "^0.2.4574",
+    "@solana/wallet-adapter-base": "^0.9.23",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "@solana/wallet-adapter-react-ui": "^0.9.34",
+    "@solana/wallet-adapter-wallets": "^0.19.22",
     "@solana/web3.js": "^1.78.4",
     "zod": "^3.22.2",
     "p-retry": "^5.1.1",
     "p-queue": "^8.0.1",
-    "lru-cache": "^10.0.0"
+    "lru-cache": "^10.0.0",
+    "events": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.8.0",
