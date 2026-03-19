@@ -1,6 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import OpenAI from 'openai';
 import { z } from 'zod';
+import { featureFlags } from '../../config';
 
 // Types for AI Analysis
 export interface ContractAnalysisRequest {
@@ -71,16 +72,34 @@ export interface ContractAnalysisResult {
 }
 
 export class SolGuardAIEngine {
-  private openai: OpenAI;
+  // TODO: [PREMIUM] OpenAI integration - requires OPENAI_API_KEY
+  // Uncomment when AI features are monetized
+  private openai: OpenAI | null = null;
   private connection: Connection;
   private vulnerabilityPatterns: Map<string, any> = new Map();
+  private aiEnabled: boolean = false;
 
   constructor() {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    // Initialize AI only if API key is available
+    // TODO: [PREMIUM] This enables GPT-4 powered analysis when API key is set
+    if (featureFlags.AI_ANALYSIS_ENABLED && process.env.OPENAI_API_KEY) {
+      this.openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+      });
+      this.aiEnabled = true;
+      console.log('🧠 AI Analysis: GPT-4 enabled');
+    } else {
+      console.log('🧠 AI Analysis: Using pattern-based analysis (zero-budget mode)');
+      console.log('   → To enable AI: Set OPENAI_API_KEY in environment');
+    }
+
     this.connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
     this.initializeVulnerabilityPatterns();
+  }
+
+  // Check if AI features are available
+  isAIEnabled(): boolean {
+    return this.aiEnabled;
   }
 
   private initializeVulnerabilityPatterns(): void {
@@ -185,10 +204,23 @@ export class SolGuardAIEngine {
   }
 
   private async performMLAnalysis(code: string, metadata?: any): Promise<MLAnalysisResult> {
+    // ========================================================================
+    // TODO: [PREMIUM] GPT-4 AI Analysis
+    // This section uses OpenAI GPT-4 for advanced contract analysis.
+    // Requires: OPENAI_API_KEY environment variable
+    // Cost: ~$0.03-0.06 per 1K tokens
+    // ========================================================================
+
+    // Check if AI is enabled (zero-budget mode fallback)
+    if (!this.aiEnabled || !this.openai) {
+      console.log('🔄 Using pattern-based analysis (AI disabled)');
+      return this.performPatternBasedAnalysis(code, metadata);
+    }
+
     try {
       // GPT-4 analysis with custom prompt engineering
       const prompt = this.buildSolanaAnalysisPrompt(code, metadata);
-      
+
       const completion = await this.openai.chat.completions.create({
         model: "gpt-4-1106-preview",
         messages: [
@@ -206,13 +238,13 @@ export class SolGuardAIEngine {
       });
 
       const gpt4Analysis = completion.choices[0]?.message?.content || '';
-      
+
       // Extract risk factors from GPT-4 analysis
       const riskFactors = this.extractRiskFactors(gpt4Analysis);
-      
+
       // Calculate ML confidence score
       const confidence = this.calculateMLConfidence(gpt4Analysis, riskFactors);
-      
+
       // Find similar contracts (placeholder for now)
       const similarContracts = await this.findSimilarContracts(code);
 
@@ -225,14 +257,78 @@ export class SolGuardAIEngine {
       };
     } catch (error) {
       console.error('ML Analysis error:', error);
-      return {
-        mlScore: 0,
-        gpt4Analysis: 'Analysis failed due to API error',
-        confidence: 0,
-        riskFactors: ['API Error'],
-        similarContracts: []
-      };
+      // Fallback to pattern-based analysis on error
+      console.log('🔄 Falling back to pattern-based analysis');
+      return this.performPatternBasedAnalysis(code, metadata);
     }
+  }
+
+  /**
+   * Pattern-based analysis fallback (zero-budget mode)
+   * This provides basic security analysis without requiring paid AI APIs
+   * TODO: [PREMIUM] Upgrade to AI analysis for better accuracy
+   */
+  private async performPatternBasedAnalysis(code: string, metadata?: any): Promise<MLAnalysisResult> {
+    const riskFactors: string[] = [];
+    let baseScore = 75; // Start with moderate score
+
+    // Enhanced pattern matching for Solana vulnerabilities
+    const vulnerabilityChecks = [
+      { pattern: /invoke_signed|invoke\s*\(/gi, risk: 'CPI calls detected - verify cross-program invocations', severity: 10 },
+      { pattern: /unchecked|unsafe/gi, risk: 'Unchecked/unsafe operations detected', severity: 15 },
+      { pattern: /authority|owner|admin/gi, risk: 'Authority patterns detected - verify access control', severity: 5 },
+      { pattern: /transfer|withdraw|deposit/gi, risk: 'Token transfer operations - verify validation', severity: 8 },
+      { pattern: /mint_to|burn/gi, risk: 'Token supply operations detected', severity: 10 },
+      { pattern: /close_account/gi, risk: 'Account closing operations - verify fund destination', severity: 12 },
+      { pattern: /set_authority/gi, risk: 'Authority change operations detected', severity: 15 },
+      { pattern: /init_if_needed/gi, risk: 'init_if_needed can be risky without proper checks', severity: 8 },
+      { pattern: /remaining_accounts/gi, risk: 'Dynamic accounts detected - verify validation', severity: 10 },
+      { pattern: /try_borrow_mut|borrow_mut/gi, risk: 'Mutable borrows detected - check for double-borrow', severity: 5 },
+    ];
+
+    for (const check of vulnerabilityChecks) {
+      if (check.pattern.test(code)) {
+        riskFactors.push(check.risk);
+        baseScore -= check.severity;
+      }
+    }
+
+    // Positive patterns (increase score)
+    const positiveChecks = [
+      { pattern: /require!|constraint\s*=/gi, bonus: 5, reason: 'Input validation present' },
+      { pattern: /checked_add|checked_sub|checked_mul/gi, bonus: 8, reason: 'Safe arithmetic operations' },
+      { pattern: /#\[account\(.*constraint.*\)]/gi, bonus: 5, reason: 'Account constraints present' },
+      { pattern: /has_one\s*=/gi, bonus: 5, reason: 'Ownership validation present' },
+      { pattern: /signer/gi, bonus: 3, reason: 'Signer validation present' },
+    ];
+
+    for (const check of positiveChecks) {
+      if (check.pattern.test(code)) {
+        baseScore += check.bonus;
+      }
+    }
+
+    // Clamp score between 0-100
+    const mlScore = Math.max(0, Math.min(100, baseScore));
+
+    // Generate analysis summary
+    const analysisNotes = [
+      '📋 Pattern-Based Security Analysis (Zero-Budget Mode)',
+      '',
+      `Risk factors identified: ${riskFactors.length}`,
+      ...riskFactors.map(r => `  ⚠️ ${r}`),
+      '',
+      'Note: For more comprehensive AI-powered analysis, configure OPENAI_API_KEY',
+      'This analysis uses rule-based pattern matching which may miss complex vulnerabilities.',
+    ].join('\n');
+
+    return {
+      mlScore,
+      gpt4Analysis: analysisNotes,
+      confidence: 0.6, // Lower confidence for pattern-based analysis
+      riskFactors,
+      similarContracts: [] // Disabled without vector DB
+    };
   }
 
   private buildSolanaAnalysisPrompt(code: string, metadata?: any): string {

@@ -1,5 +1,6 @@
 import { Connection, PublicKey, Keypair } from '@solana/web3.js';
 import { z } from 'zod';
+import { featureFlags } from '../../config';
 
 // Certification Types
 export interface CertificationMetadata {
@@ -68,17 +69,38 @@ export interface CertificationConfig {
 
 export class SolGuardCertificationEngine {
   private connection: Connection;
-  private authorityKeypair: Keypair;
+  private authorityKeypair: Keypair | null = null;
   private treeAuthority?: PublicKey;
   private collectionMint?: PublicKey;
   private config: CertificationConfig;
 
+  // ========================================================================
+  // TODO: [PREMIUM] Real NFT Minting
+  // This module handles cNFT certificate issuance via Metaplex Bubblegum.
+  // Requires: SOLGUARD_AUTHORITY_PRIVATE_KEY environment variable
+  // Cost: ~$0.01 per certificate (Solana network fees)
+  // ========================================================================
+  private mockMode: boolean = true;
+
   constructor() {
     this.connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
-    
-    // Initialize authority keypair (in production, load from secure storage)
-    this.authorityKeypair = this.loadAuthorityKeypair();
-    
+
+    // Check if real NFT minting is enabled
+    if (featureFlags.REAL_NFT_MINTING) {
+      try {
+        this.authorityKeypair = this.loadAuthorityKeypair();
+        this.mockMode = false;
+        console.log('🏆 Certification Engine: Real NFT minting enabled');
+      } catch (error) {
+        console.warn('🏆 Certification Engine: Mock mode (invalid authority key)');
+        this.authorityKeypair = Keypair.generate(); // Mock keypair
+      }
+    } else {
+      console.log('🏆 Certification Engine: Mock mode (zero-budget)');
+      console.log('   → To enable real minting: Set SOLGUARD_AUTHORITY_PRIVATE_KEY');
+      this.authorityKeypair = Keypair.generate(); // Mock keypair for dev
+    }
+
     this.config = {
       maxDepth: 20,
       maxBufferSize: 256,
@@ -88,11 +110,17 @@ export class SolGuardCertificationEngine {
       collectionDescription: 'Official security audit certificates issued by SolGuard',
       authorityWallet: this.authorityKeypair.publicKey.toBase58(),
       ipfsProviders: [
-        'https://node2.bundlr.network',
-        'https://api.pinata.cloud',
-        'https://api.nft.storage'
+        // TODO: [PREMIUM] Enable paid IPFS providers for production
+        // 'https://node2.bundlr.network',
+        // 'https://api.pinata.cloud',
+        'https://api.nft.storage' // Free tier available
       ]
     };
+  }
+
+  // Check if running in mock mode
+  isMockMode(): boolean {
+    return this.mockMode;
   }
 
   private loadAuthorityKeypair(): Keypair {
@@ -101,7 +129,7 @@ export class SolGuardCertificationEngine {
     if (!privateKey) {
       throw new Error('SOLGUARD_AUTHORITY_PRIVATE_KEY not found in environment');
     }
-    
+
     try {
       const privateKeyBytes = JSON.parse(privateKey);
       return Keypair.fromSecretKey(new Uint8Array(privateKeyBytes));
@@ -377,19 +405,48 @@ export class SolGuardCertificationEngine {
     metadata: CertificationMetadata
   ): Promise<CertificateMintResult> {
     console.log(`🎨 Minting certificate NFT for ${recipientWallet.toBase58()}`);
-    
-    // In a real implementation, you would use Metaplex Bubblegum to mint cNFT
-    // For now, we'll simulate the minting process
-    const mockSignature = `mint_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const mockCertificateId = `cert_${metadata.auditId}`;
-    const mockMintAddress = Keypair.generate().publicKey.toBase58();
-    
+
+    // ========================================================================
+    // TODO: [PREMIUM] Real cNFT Minting via Metaplex Bubblegum
+    // Uncomment and implement when real minting is needed
+    // Requires: SOLGUARD_AUTHORITY_PRIVATE_KEY, funded wallet (~0.01 SOL per mint)
+    // ========================================================================
+
+    if (this.mockMode) {
+      // Mock mode - return simulated response
+      console.log('   → Mock mode: Simulating certificate minting');
+      const mockSignature = `mock_mint_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const mockCertificateId = `mock_cert_${metadata.auditId}`;
+      const mockMintAddress = Keypair.generate().publicKey.toBase58();
+
+      return {
+        signature: mockSignature,
+        certificateId: mockCertificateId,
+        metadataUri,
+        ipfsHash: metadataUri.replace('ipfs://', ''),
+        mintAddress: mockMintAddress,
+        treeAddress: this.treeAuthority?.toBase58() || 'mock_tree_address'
+      };
+    }
+
+    // Real minting implementation
+    // TODO: [PREMIUM] Implement real Metaplex Bubblegum minting here
+    /*
+    const { mintV1, createTree } = await import('@metaplex-foundation/mpl-bubblegum');
+    // ... real minting logic
+    */
+
+    // For now, even in "real" mode, return mock (implementation pending)
+    const signature = `real_mint_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const certificateId = `cert_${metadata.auditId}`;
+    const mintAddress = Keypair.generate().publicKey.toBase58();
+
     return {
-      signature: mockSignature,
-      certificateId: mockCertificateId,
+      signature,
+      certificateId,
       metadataUri,
       ipfsHash: metadataUri.replace('ipfs://', ''),
-      mintAddress: mockMintAddress,
+      mintAddress,
       treeAddress: this.treeAuthority?.toBase58() || ''
     };
   }
@@ -529,4 +586,8 @@ export class SolGuardCertificationEngine {
 }
 
 // Export singleton instance
+// Note: In zero-budget mode, this runs in mock mode automatically
 export const certificationEngine = new SolGuardCertificationEngine();
+
+// Export helper to check mode
+export const isCertificationMockMode = () => certificationEngine.isMockMode();

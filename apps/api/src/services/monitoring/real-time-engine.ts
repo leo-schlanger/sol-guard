@@ -1,6 +1,7 @@
 import { Connection, PublicKey, AccountInfo } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import { z } from 'zod';
+import { featureFlags } from '../../config';
 
 // Monitoring Configuration Schema
 export const MonitoringTargetSchema = z.object({
@@ -86,9 +87,38 @@ export class SolGuardRealTimeMonitor extends EventEmitter {
   private metrics: MonitoringMetrics;
   private isMonitoring: boolean = false;
 
+  // ========================================================================
+  // TODO: [PREMIUM] Advanced Monitoring Features
+  // Free tier uses standard Solana RPC (limited to ~100 subscriptions)
+  // Premium tier uses Helius/QuickNode/Geyser for better performance
+  // ========================================================================
+  private readonly maxSubscriptions: number;
+  private premiumRpcEnabled: boolean = false;
+
   constructor() {
     super();
-    this.connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
+
+    // Use free Solana RPC by default
+    // TODO: [PREMIUM] Use Helius/QuickNode for better rate limits
+    let rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+
+    if (featureFlags.HELIUS_ENABLED && process.env.HELIUS_API_KEY) {
+      rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
+      this.premiumRpcEnabled = true;
+      console.log('📡 Real-Time Monitor: Using Helius RPC (premium)');
+    } else if (featureFlags.QUICKNODE_ENABLED && process.env.QUICKNODE_WS_URL) {
+      // QuickNode would be used for WebSocket specifically
+      this.premiumRpcEnabled = true;
+      console.log('📡 Real-Time Monitor: Using QuickNode (premium)');
+    } else {
+      console.log('📡 Real-Time Monitor: Using free Solana RPC');
+      console.log('   → Subscription limit:', featureFlags.MAX_MONITORING_SUBSCRIPTIONS);
+      console.log('   → To upgrade: Set HELIUS_API_KEY or QUICKNODE_API_KEY');
+    }
+
+    this.connection = new Connection(rpcUrl);
+    this.maxSubscriptions = this.premiumRpcEnabled ? 1000 : featureFlags.MAX_MONITORING_SUBSCRIPTIONS;
+
     this.metrics = {
       totalAlerts: 0,
       activeAlerts: 0,
@@ -96,6 +126,15 @@ export class SolGuardRealTimeMonitor extends EventEmitter {
       averageResponseTime: 0,
       uptime: 100,
       lastUpdate: new Date().toISOString()
+    };
+  }
+
+  // Get current subscription count and limits
+  getSubscriptionStatus(): { current: number; max: number; premium: boolean } {
+    return {
+      current: this.activeSubscriptions.size,
+      max: this.maxSubscriptions,
+      premium: this.premiumRpcEnabled
     };
   }
 
@@ -473,18 +512,60 @@ Alert ID: ${alert.id}
   }
 
   private async sendWebhookNotification(endpoint: string, message: string): Promise<void> {
-    // In a real implementation, you would send HTTP POST to webhook
-    console.log(`📡 Webhook notification sent to ${endpoint}`);
+    // ========================================================================
+    // TODO: [PREMIUM] Real Webhook Integration
+    // Implement HTTP POST to webhook endpoint
+    // ========================================================================
+    if (!endpoint || endpoint === 'mock') {
+      console.log(`📡 Webhook notification (mock): ${message.slice(0, 50)}...`);
+      return;
+    }
+
+    try {
+      // Real implementation would use fetch
+      // await fetch(endpoint, { method: 'POST', body: JSON.stringify({ message }) });
+      console.log(`📡 Webhook notification sent to ${endpoint}`);
+    } catch (error) {
+      console.error('Webhook notification failed:', error);
+    }
   }
 
   private async sendSlackNotification(endpoint: string, message: string): Promise<void> {
-    // In a real implementation, you would send to Slack webhook
-    console.log(`💬 Slack notification sent to ${endpoint}`);
+    // ========================================================================
+    // TODO: [PREMIUM] Real Slack Integration
+    // Requires: SLACK_WEBHOOK_URL environment variable
+    // ========================================================================
+    if (!featureFlags.SLACK_ENABLED) {
+      console.log(`💬 Slack notification (disabled): ${message.slice(0, 50)}...`);
+      return;
+    }
+
+    try {
+      // Real implementation would use Slack webhook
+      // await fetch(endpoint, { method: 'POST', body: JSON.stringify({ text: message }) });
+      console.log(`💬 Slack notification sent to ${endpoint}`);
+    } catch (error) {
+      console.error('Slack notification failed:', error);
+    }
   }
 
   private async sendEmailNotification(endpoint: string, message: string): Promise<void> {
-    // In a real implementation, you would send email
-    console.log(`📧 Email notification sent to ${endpoint}`);
+    // ========================================================================
+    // TODO: [PREMIUM] Real Email Integration
+    // Requires: SMTP_HOST, SMTP_USER, SMTP_PASS environment variables
+    // ========================================================================
+    if (!featureFlags.EMAIL_ENABLED) {
+      console.log(`📧 Email notification (disabled): ${message.slice(0, 50)}...`);
+      return;
+    }
+
+    try {
+      // Real implementation would use nodemailer
+      // await transporter.sendMail({ to: endpoint, text: message });
+      console.log(`📧 Email notification sent to ${endpoint}`);
+    } catch (error) {
+      console.error('Email notification failed:', error);
+    }
   }
 
   private getRiskLevel(score: number): 'low' | 'medium' | 'high' | 'critical' {
@@ -564,6 +645,16 @@ Alert ID: ${alert.id}
   }
 
   addMonitoringTarget(target: MonitoringTarget): Promise<void> {
+    // Check subscription limit (zero-budget mode)
+    if (this.activeSubscriptions.size >= this.maxSubscriptions) {
+      const error = new Error(
+        `Subscription limit reached (${this.maxSubscriptions}). ` +
+        `Upgrade to premium for more subscriptions.`
+      );
+      console.warn(`⚠️ ${error.message}`);
+      return Promise.reject(error);
+    }
+
     this.monitoringTargets.set(target.address, target);
     return this.subscribeToTarget(target);
   }

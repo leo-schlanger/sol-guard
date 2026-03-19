@@ -65,12 +65,49 @@ if (config.NODE_ENV === 'production') {
   const productionRequiredVars = [
     'DATABASE_URL',
     'REDIS_URL',
-    'OPENAI_API_KEY',
+    // NOTE: OPENAI_API_KEY removed from required - using pattern-based analysis as fallback
+    // TODO: [PREMIUM] Re-enable when AI features are monetized
+    // 'OPENAI_API_KEY',
   ] as const
-  
+
   for (const envVar of productionRequiredVars) {
     if (!config[envVar]) {
       throw new Error(`Missing required production environment variable: ${envVar}`)
     }
   }
+}
+
+// Feature flags for zero-budget mode
+export const featureFlags = {
+  // AI/ML Features - Disabled by default (require paid APIs)
+  AI_ANALYSIS_ENABLED: !!config.OPENAI_API_KEY,
+  VECTOR_DB_ENABLED: !!process.env.PINECONE_API_KEY,
+
+  // Premium RPC Features - Disabled by default
+  HELIUS_ENABLED: !!config.HELIUS_API_KEY,
+  QUICKNODE_ENABLED: !!config.QUICKNODE_API_KEY,
+
+  // Monitoring Features - Disabled by default
+  SENTRY_ENABLED: !!config.SENTRY_DSN,
+  DATADOG_ENABLED: !!config.DATADOG_API_KEY,
+
+  // Certification Features - Mock mode by default
+  REAL_NFT_MINTING: !!process.env.SOLGUARD_AUTHORITY_PRIVATE_KEY,
+
+  // Notification Features - Disabled by default
+  SLACK_ENABLED: !!process.env.SLACK_WEBHOOK_URL,
+  EMAIL_ENABLED: !!process.env.SMTP_HOST,
+
+  // Real-time monitoring limits (free tier)
+  MAX_MONITORING_SUBSCRIPTIONS: 100,
+} as const
+
+// Log feature status on startup
+if (config.NODE_ENV !== 'test') {
+  console.log('📋 Feature Flags Status:')
+  console.log(`   AI Analysis: ${featureFlags.AI_ANALYSIS_ENABLED ? '✅ Enabled' : '❌ Disabled (no OPENAI_API_KEY)'}`)
+  console.log(`   Vector DB: ${featureFlags.VECTOR_DB_ENABLED ? '✅ Enabled' : '❌ Disabled (no PINECONE_API_KEY)'}`)
+  console.log(`   Premium RPC: ${featureFlags.HELIUS_ENABLED || featureFlags.QUICKNODE_ENABLED ? '✅ Enabled' : '❌ Disabled (using free RPC)'}`)
+  console.log(`   Real NFT Minting: ${featureFlags.REAL_NFT_MINTING ? '✅ Enabled' : '❌ Disabled (mock mode)'}`)
+  console.log(`   Monitoring Limit: ${featureFlags.MAX_MONITORING_SUBSCRIPTIONS} subscriptions`)
 }
