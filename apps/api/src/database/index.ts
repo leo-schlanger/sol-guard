@@ -62,4 +62,14 @@ export class DatabaseService {
   async disconnect() {
     await this.pool.end();
   }
+
+  // Health check - simple query to verify connection
+  async healthCheck(): Promise<boolean> {
+    try {
+      const result = await this.pool.query('SELECT 1');
+      return result.rowCount === 1;
+    } catch {
+      return false;
+    }
+  }
 }

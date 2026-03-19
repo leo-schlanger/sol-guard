@@ -31,9 +31,29 @@ async function buildServer() {
     credentials: true,
   })
 
+  // IP-based rate limiting for free public service
+  // 60 requests per minute per IP for anonymous users
   await fastify.register(rateLimit, {
-    max: 1000,
+    max: 60,
     timeWindow: '1 minute',
+    keyGenerator: (request) => {
+      // Use X-Forwarded-For for proxied requests, fallback to IP
+      const forwarded = request.headers['x-forwarded-for'];
+      if (forwarded) {
+        const ip = Array.isArray(forwarded) ? forwarded[0] : forwarded.split(',')[0];
+        return ip.trim();
+      }
+      return request.ip;
+    },
+    errorResponseBuilder: (request, context) => ({
+      error: 'Rate limit exceeded',
+      message: `You have exceeded the rate limit of ${context.max} requests per minute`,
+      retryAfter: Math.ceil(context.ttl / 1000),
+    }),
+    // Whitelist health check endpoints
+    allowList: (request) => {
+      return request.url === '/health' || request.url === '/api/health';
+    },
   })
 
   await fastify.register(jwt, {
@@ -47,7 +67,7 @@ async function buildServer() {
     swagger: {
       info: {
         title: 'SolGuard API',
-        description: 'Plataforma de Segurança IA para Ecossistema Solana',
+        description: 'AI Security Platform for the Solana Ecosystem',
         version: '1.0.0',
       },
       host: config.API_HOST,
